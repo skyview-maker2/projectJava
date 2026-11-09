@@ -1,1 +1,799 @@
+(function () {
+  'use strict';
 
+  if (window.__externalModMenu) {
+    window.__externalModMenu.open();
+    return;
+  }
+
+  var state = {
+    open: true,
+    minimized: false,
+    search: '',
+    speed: false,
+    ultraSpeed: false,
+    noGravity: false,
+    highJump: false,
+    moonGravity: false,
+    superJump: false,
+    flyMode: false,
+    godMode: false,
+    noFall: false,
+    infiniteSprint: false,
+    freezeCube: false,
+    cubeChaos: false,
+    infiniteBalls: false,
+    endlessBalls: false,
+    shootSpeed: 1,
+    shotBoost: false,
+    autoFire: false,
+    rapidFire: false,
+    explosiveBalls: false,
+    giantBalls: false,
+    ballRain: false,
+    laserShot: false,
+    timeWarp: false,
+    slowMotion: false,
+    autoReset: false,
+    warpField: false,
+    instantRespawn: false,
+    oneHitCube: false,
+    magnetBalls: false,
+    hideHud: false,
+    toggleKey: 'Backquote'
+  };
+
+  var root = null;
+  var panel = null;
+  var listenersReady = false;
+  var loopStarted = false;
+  var lastAutoFire = 0;
+  var lastPulse = 0;
+  var buttonMap = {};
+
+  function getGame() {
+    if (!window.__bmGame) return null;
+    return window.__bmGame.S || window.__bmGame;
+  }
+
+  function safeCall(fn) {
+    if (typeof fn !== 'function') return undefined;
+    try {
+      return fn();
+    } catch (err) {
+      return undefined;
+    }
+  }
+
+  function syncGameSettings() {
+    var g = getGame();
+    if (!g) return;
+    var cfg = g.config || (g.S && g.S.config) || null;
+    if (!cfg) return;
+
+    cfg.moveSpeed = state.ultraSpeed ? 22 : state.speed ? 13 : 7;
+    cfg.sprintSpeed = state.infiniteSprint ? 30 : state.ultraSpeed ? 24 : 11;
+    cfg.spawnTime = state.rapidFire ? 0.04 : 0.16;
+    cfg.shotPower = (Number(state.shootSpeed) || 1) * (state.laserShot ? 3.4 : state.shotBoost ? 2.1 : 1);
+    cfg.holdSpawnReduction = state.rapidFire ? 0.08 : 0.035;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function setButtonState(button, active) {
+    if (!button) return;
+    button.classList.toggle('active', !!active);
+    button.setAttribute('data-on', active ? '1' : '0');
+    button.style.background = active ? 'rgba(90,199,255,0.18)' : 'rgba(255,255,255,0.04)';
+  }
+
+  function makeButton(label, handler) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = label;
+    btn.style.cssText = [
+      'border:1px solid rgba(255,255,255,0.12)',
+      'border-radius:10px',
+      'background:rgba(255,255,255,0.04)',
+      'color:#eef3ff',
+      'padding:9px 10px',
+      'font-size:12.5px',
+      'font-weight:700',
+      'text-align:left',
+      'cursor:pointer',
+      'transition:all 0.14s ease',
+      'letter-spacing:0.02em'
+    ].join(';');
+    btn.onmouseenter = function () {
+      btn.style.background = 'rgba(255,255,255,0.09)';
+    };
+    btn.onmouseleave = function () {
+      var active = btn.classList.contains('active');
+      btn.style.background = active ? 'rgba(90,199,255,0.18)' : 'rgba(255,255,255,0.04)';
+    };
+    btn.onclick = handler || function () {};
+    return btn;
+  }
+
+  function makeSection(title) {
+    var section = document.createElement('div');
+    section.setAttribute('data-section', '1');
+    section.style.cssText = [
+      'border:1px solid rgba(255,255,255,0.08)',
+      'background:linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.012))',
+      'border-radius:12px',
+      'padding:8px',
+      'display:grid',
+      'gap:7px'
+    ].join(';');
+
+    var label = document.createElement('div');
+    label.textContent = title;
+    label.style.cssText = [
+      'font-size:11px',
+      'text-transform:uppercase',
+      'letter-spacing:0.12em',
+      'color:rgba(170,210,255,0.9)',
+      'font-weight:700',
+      'padding:2px 4px 4px'
+    ].join(';');
+
+    section.appendChild(label);
+    return section;
+  }
+
+  function addToggle(section, label, key, callback) {
+    var btn = makeButton(label, function () {
+      state[key] = !state[key];
+      setButtonState(btn, state[key]);
+      if (callback) callback();
+    });
+    btn.setAttribute('data-label', label);
+    section.appendChild(btn);
+    buttonMap[key] = btn;
+    return btn;
+  }
+
+  function addAction(section, label, callback) {
+    var btn = makeButton(label, callback || function () {});
+    btn.setAttribute('data-label', label);
+    section.appendChild(btn);
+    return btn;
+  }
+
+  function addSpeedControl(section, label, key, values) {
+    var btn = makeButton(label + ': ' + (state[key] || values[0]) + 'x', function () {
+      var current = Number(state[key]) || values[0];
+      var index = values.indexOf(current);
+      if (index === -1) index = 0;
+      var next = values[(index + 1) % values.length];
+      state[key] = next;
+      btn.textContent = label + ': ' + next + 'x';
+    });
+    btn.setAttribute('data-label', label + ' ' + (state[key] || values[0]) + 'x');
+    section.appendChild(btn);
+    buttonMap[key] = btn;
+    return btn;
+  }
+
+  function spawnBurst(count) {
+    var g = getGame();
+    if (!g || !g.shoot) return;
+    var amount = typeof count === 'number' ? count : 5;
+    for (var i = 0; i < amount; i += 1) {
+      safeCall(function () {
+        g.shoot();
+      });
+    }
+  }
+
+  function killBallAt(index) {
+    var g = getGame();
+    if (!g || !g.balls || !g.balls[index]) return;
+    var ball = g.balls[index];
+    if (ball && ball.m && ball.m.parent) ball.m.parent.remove(ball.m);
+    g.balls.splice(index, 1);
+  }
+
+  function clearBalls() {
+    var g = getGame();
+    if (!g || !g.balls) return;
+    while (g.balls.length) {
+      killBallAt(0);
+    }
+  }
+
+  function setPlayerPos(x, y, z) {
+    var g = getGame();
+    if (!g || !g.P || !g.P.p) return;
+    var px = x == null ? g.P.p.x : x;
+    var py = y == null ? g.P.p.y : y;
+    var pz = z == null ? g.P.p.z : z;
+    g.P.p.set(px, py, pz);
+    if (g.cam) {
+      g.cam.position.set(g.P.p.x, g.P.p.y + 1.7, g.P.p.z);
+    }
+  }
+
+  function forceReset() {
+    var g = getGame();
+    if (!g || !g.reset) return;
+    safeCall(function () {
+      g.reset();
+    });
+  }
+
+  function setMinimized(value) {
+    state.minimized = !!value;
+    if (!root || !panel) return;
+    var content = panel.children && panel.children[1] ? panel.children[1] : null;
+    if (content && content.style) {
+      content.style.display = state.minimized ? 'none' : 'grid';
+    }
+    root.style.width = state.minimized ? '220px' : '340px';
+    root.style.maxHeight = state.minimized ? '90px' : '82vh';
+    panel.style.overflow = 'hidden';
+  }
+
+  function applySearchFilter() {
+    if (!panel) return;
+    var needle = (state.search || '').trim().toLowerCase();
+    var sections = panel.querySelectorAll('[data-section]');
+    for (var i = 0; i < sections.length; i += 1) {
+      var section = sections[i];
+      var hit = false;
+      var buttons = section.querySelectorAll('[data-label]');
+      for (var j = 0; j < buttons.length; j += 1) {
+        var btn = buttons[j];
+        var match = !needle || (btn.getAttribute('data-label') || '').toLowerCase().indexOf(needle) !== -1;
+        btn.style.display = match ? '' : 'none';
+        if (match) hit = true;
+      }
+      section.style.display = hit || !needle ? '' : 'none';
+    }
+  }
+
+  function togglePointerLock() {
+    try {
+      if (document.pointerLockElement) {
+        document.exitPointerLock();
+      } else {
+        var target = (document.body && document.body.requestPointerLock) ? document.body : document.documentElement;
+        if (target && target.requestPointerLock) target.requestPointerLock();
+      }
+    } catch (err) {}
+  }
+
+  function patchGameHooks() {
+    var g = getGame();
+    if (!g) return;
+
+    syncGameSettings();
+
+    var originalShoot = g.shoot;
+    if (originalShoot && !originalShoot.__extPatched) {
+      g.shoot = function () {
+        if (state.infiniteBalls && g.balls && g.balls.length >= 80) {
+          return undefined;
+        }
+
+        if (state.endlessBalls && g.balls && g.balls.length >= 80) {
+          while (g.balls.length) {
+            var oldBall = g.balls.shift();
+            if (oldBall && oldBall.m && oldBall.m.parent) {
+              oldBall.m.parent.remove(oldBall.m);
+            }
+          }
+        }
+
+        var result = originalShoot.apply(this, arguments);
+
+        var shotScale = Number(state.shootSpeed) || 1;
+
+        if (state.shotBoost && g.balls && g.balls.length) {
+          var last = g.balls[g.balls.length - 1];
+          if (last && last.v) {
+            last.v.x *= 2.0 * shotScale;
+            last.v.y *= 2.0 * shotScale;
+            last.v.z *= 2.0 * shotScale;
+          }
+        } else if (g.balls && g.balls.length) {
+          var scaledBall = g.balls[g.balls.length - 1];
+          if (scaledBall && scaledBall.v) {
+            scaledBall.v.x *= shotScale;
+            scaledBall.v.y *= shotScale;
+            scaledBall.v.z *= shotScale;
+          }
+        }
+
+        if (state.laserShot && g.balls && g.balls.length) {
+          var laserBall = g.balls[g.balls.length - 1];
+          if (laserBall && laserBall.v) {
+            laserBall.v.x *= 3.2;
+            laserBall.v.y *= 3.2;
+            laserBall.v.z *= 3.2;
+          }
+        }
+
+        if (state.giantBalls && g.balls && g.balls.length) {
+          var giantBall = g.balls[g.balls.length - 1];
+          if (giantBall && giantBall.m) {
+            giantBall.m.scale.setScalar(1.9);
+          }
+        }
+
+        if (state.explosiveBalls && g.balls && g.balls.length) {
+          var boomBall = g.balls[g.balls.length - 1];
+          if (boomBall && boomBall.v) {
+            boomBall.v.x *= 1.35;
+            boomBall.v.y *= 1.35;
+            boomBall.v.z *= 1.35;
+          }
+        }
+
+        if (state.magnetBalls && g.balls && g.balls.length) {
+          var magnetTarget = g.balls[g.balls.length - 1];
+          if (magnetTarget && g.P && g.P.p) {
+            magnetTarget.p.x += (g.P.p.x - magnetTarget.p.x) * 0.18;
+            magnetTarget.p.z += (g.P.p.z - magnetTarget.p.z) * 0.18;
+          }
+        }
+
+        return result;
+      };
+      originalShoot.__extPatched = true;
+    }
+  }
+
+  function runtimeLoop() {
+    var g = getGame();
+    if (!g) {
+      requestAnimationFrame(runtimeLoop);
+      return;
+    }
+
+    syncGameSettings();
+
+    var P = g.P;
+    var cube = g.cube;
+    var cam = g.cam;
+    var keys = g.keys || {};
+
+    if (P) {
+      if (state.speed || state.ultraSpeed) {
+        P.v.x *= 1.1;
+        P.v.z *= 1.1;
+        P.spd = Math.sqrt(P.v.x * P.v.x + P.v.z * P.v.z);
+      }
+
+      if (state.noGravity) {
+        P.v.y = 0;
+        if (P.p && P.p.y < 0) P.p.y = 0;
+        P.ground = true;
+      }
+
+      if (state.moonGravity) {
+        P.v.y -= 1.8;
+      }
+
+      if (state.timeWarp) {
+        P.v.x *= 1.25;
+        P.v.z *= 1.25;
+      }
+
+      if (state.superJump && P.ground && (keys.Space || keys.KeyQ)) {
+        P.v.y = 16;
+      }
+
+      if (state.highJump && P.ground && (keys.Space || keys.KeyQ)) {
+        P.v.y = 11.5;
+      }
+
+      if (state.godMode) {
+        if (P.p && P.p.y < 0) P.p.y = 0;
+        P.ground = true;
+        if (P.v.y < 0) P.v.y = 0;
+      }
+
+      if (state.noFall && P.p && P.p.y < 0.8) {
+        P.p.y = 0.8;
+        P.v.y = 0;
+        P.ground = true;
+      }
+
+      if (state.flyMode) {
+        if (keys.KeyQ) {
+          P.p.y += 0.28;
+        }
+        if (keys.KeyE) {
+          P.p.y -= 0.28;
+        }
+        P.ground = false;
+      }
+
+      if (state.warpField) {
+        if (P.p) {
+          P.p.x += Math.sin((performance.now() * 0.01)) * 0.1;
+          P.p.z += Math.cos((performance.now() * 0.013)) * 0.1;
+        }
+      }
+
+      if (state.instantRespawn && P.p && P.p.y < -10) {
+        P.p.y = 2;
+        P.v.y = 0;
+      }
+    }
+
+    if (state.freezeCube && cube) {
+      cube.v.set(0, 0, 0);
+      cube.w.set(0, 0, 0);
+    }
+
+    if (state.cubeChaos && cube) {
+      cube.v.x += (Math.random() - 0.5) * 2.2;
+      cube.v.y += (Math.random() - 0.5) * 2.7;
+      cube.v.z += (Math.random() - 0.5) * 2.2;
+      cube.w.x += (Math.random() - 0.5) * 4.5;
+      cube.w.y += (Math.random() - 0.5) * 4.5;
+      cube.w.z += (Math.random() - 0.5) * 4.5;
+    }
+
+    if (state.oneHitCube && cube) {
+      cube.rest = 0;
+      cube.sleep = false;
+    }
+
+    if (state.autoReset && P && P.p && P.p.y < -15) {
+      forceReset();
+    }
+
+    if (state.autoFire && performance.now() - lastAutoFire > 90) {
+      lastAutoFire = performance.now();
+      if (g.shoot) safeCall(function () { g.shoot(); });
+    }
+
+    if (cam && state.slowMotion) {
+      cam.fov = clamp((cam.fov || 75) + 0.12, 50, 110);
+    }
+
+    if (document && document.body) {
+      document.body.style.filter = state.hideHud ? 'brightness(1.15) saturate(1.25)' : 'none';
+    }
+
+    if (state.endlessBalls && g.balls && g.balls.length > 220) {
+      while (g.balls.length > 220) {
+        killBallAt(0);
+      }
+    }
+
+    if (state.infiniteBalls && g.balls && g.balls.length >= 80) {
+      if (performance.now() - lastPulse > 250) {
+        lastPulse = performance.now();
+        while (g.balls.length > 70) {
+          killBallAt(0);
+        }
+      }
+    }
+
+    requestAnimationFrame(runtimeLoop);
+  }
+
+  function installKeyboardShortcuts() {
+    if (listenersReady) return;
+    listenersReady = true;
+
+    document.addEventListener('keydown', function (event) {
+      if (event.code === 'Backquote' || event.code === 'Insert') {
+        event.preventDefault();
+        toggle();
+      }
+      if (event.code === 'KeyH' && !event.repeat) {
+        event.preventDefault();
+        show();
+      }
+      if (event.code === 'KeyN' && !event.repeat) {
+        event.preventDefault();
+        forceReset();
+      }
+    }, true);
+  }
+
+  function createPanel() {
+    if (root) return root;
+
+    root = document.createElement('div');
+    root.id = 'ext-mod-menu-root';
+    root.style.cssText = [
+      'position:fixed',
+      'top:18px',
+      'right:18px',
+      'width:340px',
+      'max-height:82vh',
+      'overflow:hidden',
+      'z-index:2147483647',
+      'font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif',
+      'color:#f7f8ff',
+      'pointer-events:auto'
+    ].join(';');
+
+    panel = document.createElement('div');
+    panel.style.cssText = [
+      'background:rgba(8,12,20,0.88)',
+      'border:1px solid rgba(255,255,255,0.12)',
+      'backdrop-filter:blur(18px)',
+      '-webkit-backdrop-filter:blur(18px)',
+      'border-radius:18px',
+      'box-shadow:0 16px 44px rgba(0,0,0,0.48)',
+      'overflow:hidden'
+    ].join(';');
+
+    var head = document.createElement('div');
+    head.style.cssText = [
+      'display:flex',
+      'align-items:center',
+      'justify-content:space-between',
+      'padding:12px 14px',
+      'background:linear-gradient(90deg, rgba(130,92,255,0.42), rgba(34,211,238,0.18), rgba(16,185,129,0.18))',
+      'border-bottom:1px solid rgba(255,255,255,0.08)'
+    ].join(';');
+
+    var titleWrap = document.createElement('div');
+    titleWrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+    var badge = document.createElement('div');
+    badge.textContent = '⚡';
+    badge.style.cssText = 'font-size:16px;filter:drop-shadow(0 0 10px rgba(125,211,252,0.8));';
+
+    var title = document.createElement('div');
+    title.textContent = 'Pro Mod Menu';
+    title.style.cssText = 'font-weight:800;font-size:13px;letter-spacing:0.12em;text-transform:uppercase';
+    titleWrap.appendChild(badge);
+    titleWrap.appendChild(title);
+
+    var controlRow = document.createElement('div');
+    controlRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+
+    var minimizeBtn = document.createElement('button');
+    minimizeBtn.textContent = 'Min';
+    minimizeBtn.style.cssText = 'border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:white;border-radius:8px;padding:6px 8px;font-size:11px;font-weight:700;cursor:pointer;';
+    minimizeBtn.onclick = function () {
+      setMinimized(!state.minimized);
+      minimizeBtn.textContent = state.minimized ? 'Max' : 'Min';
+    };
+
+    var resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset';
+    resetBtn.style.cssText = 'border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:white;border-radius:8px;padding:6px 8px;font-size:11px;font-weight:700;cursor:pointer;';
+    resetBtn.onclick = forceReset;
+
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '×';
+    closeBtn.style.cssText = [
+      'border:none',
+      'background:rgba(255,255,255,0.08)',
+      'color:white',
+      'width:28px',
+      'height:28px',
+      'border-radius:8px',
+      'cursor:pointer',
+      'font-size:18px',
+      'line-height:1'
+    ].join(';');
+    closeBtn.onclick = function () {
+      api.close();
+    };
+
+    controlRow.appendChild(minimizeBtn);
+    controlRow.appendChild(resetBtn);
+    controlRow.appendChild(closeBtn);
+    head.appendChild(titleWrap);
+    head.appendChild(controlRow);
+
+    var body = document.createElement('div');
+    body.style.cssText = [
+      'padding:12px',
+      'display:grid',
+      'gap:10px',
+      'max-height:calc(82vh - 90px)',
+      'overflow-y:auto',
+      'scrollbar-width:thin'
+    ].join(';');
+
+    var searchWrap = document.createElement('div');
+    searchWrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+    var searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Search mods...';
+    searchInput.value = state.search;
+    searchInput.style.cssText = [
+      'width:100%',
+      'border:1px solid rgba(255,255,255,0.12)',
+      'background:rgba(255,255,255,0.04)',
+      'color:#eef3ff',
+      'padding:8px 10px',
+      'border-radius:10px',
+      'outline:none',
+      'font-size:12px'
+    ].join(';');
+    searchInput.oninput = function () {
+      state.search = searchInput.value;
+      applySearchFilter();
+    };
+    searchWrap.appendChild(searchInput);
+    body.appendChild(searchWrap);
+
+    var quick = document.createElement('div');
+    quick.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
+
+    var quickBurst = makeButton('Spawn 10', function () {
+      spawnBurst(10);
+    });
+    var quickClear = makeButton('Clear Balls', function () {
+      clearBalls();
+    });
+    var quickTp = makeButton('Teleport', function () {
+      var g = getGame();
+      if (g && g.P && g.P.p) setPlayerPos(g.P.p.x, 2.2, g.P.p.z);
+    });
+    var quickUnlock = makeButton('Unlock Mouse', function () {
+      togglePointerLock();
+    });
+
+    quick.appendChild(quickBurst);
+    quick.appendChild(quickClear);
+    quick.appendChild(quickTp);
+    quick.appendChild(quickUnlock);
+    body.appendChild(quick);
+
+    var movementSection = makeSection('Movement');
+    addToggle(movementSection, 'Speed x2', 'speed');
+    addToggle(movementSection, 'Ultra Speed', 'ultraSpeed');
+    addToggle(movementSection, 'No Gravity', 'noGravity');
+    addToggle(movementSection, 'High Jump', 'highJump');
+    addToggle(movementSection, 'Moon Gravity', 'moonGravity');
+    addToggle(movementSection, 'Super Jump', 'superJump');
+    addToggle(movementSection, 'Fly Mode', 'flyMode');
+    addToggle(movementSection, 'Infinite Sprint', 'infiniteSprint');
+    addToggle(movementSection, 'God Mode', 'godMode');
+    addToggle(movementSection, 'No Fall', 'noFall');
+    body.appendChild(movementSection);
+
+    var cubeSection = makeSection('Cube');
+    addToggle(cubeSection, 'Freeze Cube', 'freezeCube');
+    addToggle(cubeSection, 'Cube Chaos', 'cubeChaos');
+    addToggle(cubeSection, 'Slow Motion', 'slowMotion');
+    addToggle(cubeSection, 'Time Warp', 'timeWarp');
+    addToggle(cubeSection, 'One Hit Cube', 'oneHitCube');
+    addAction(cubeSection, 'Kick Cube', function () {
+      var g = getGame();
+      if (!g || !g.cube) return;
+      g.cube.v.x = (Math.random() - 0.5) * 26;
+      g.cube.v.y = 8 + Math.random() * 12;
+      g.cube.v.z = (Math.random() - 0.5) * 26;
+    });
+    body.appendChild(cubeSection);
+
+    var ballSection = makeSection('Balls');
+    addToggle(ballSection, 'Infinite Balls', 'infiniteBalls');
+    addToggle(ballSection, 'No Ball Cap', 'endlessBalls');
+    addSpeedControl(ballSection, 'Ball Speed', 'shootSpeed', [1, 1.5, 2, 3, 4, 6, 8]);
+    addToggle(ballSection, 'Shot x2', 'shotBoost');
+    addToggle(ballSection, 'Auto Fire', 'autoFire');
+    addToggle(ballSection, 'Rapid Fire', 'rapidFire');
+    addToggle(ballSection, 'Explosive', 'explosiveBalls');
+    addToggle(ballSection, 'Giant Balls', 'giantBalls');
+    addToggle(ballSection, 'Ball Rain', 'ballRain');
+    addToggle(ballSection, 'Laser Shot', 'laserShot');
+    addToggle(ballSection, 'Magnet Balls', 'magnetBalls');
+    addAction(ballSection, 'Spawn 5', function () {
+      spawnBurst(5);
+    });
+    addAction(ballSection, 'Spawn 25', function () {
+      spawnBurst(25);
+    });
+    addAction(ballSection, 'Clear Balls', clearBalls);
+    body.appendChild(ballSection);
+
+    var worldSection = makeSection('World');
+    addToggle(worldSection, 'Auto Reset', 'autoReset');
+    addToggle(worldSection, 'Warp Field', 'warpField');
+    addToggle(worldSection, 'Instant Respawn', 'instantRespawn');
+    addToggle(worldSection, 'Hide HUD', 'hideHud');
+    addAction(worldSection, 'Reset World', forceReset);
+    addAction(worldSection, 'Unlock Mouse', togglePointerLock);
+    addAction(worldSection, 'Spawn 100', function () {
+      spawnBurst(100);
+    });
+    addAction(worldSection, 'Y+10', function () {
+      setPlayerPos(null, 10, null);
+    });
+    addAction(worldSection, 'Y+20', function () {
+      setPlayerPos(null, 20, null);
+    });
+    body.appendChild(worldSection);
+
+    var footer = document.createElement('div');
+    footer.style.cssText = 'padding:8px 12px 12px;color:rgba(255,255,255,0.7);font-size:11px;line-height:1.5';
+    footer.textContent = 'Toggle: ` or Insert • H = show • N = reset • Ultra script active';
+
+    panel.appendChild(head);
+    panel.appendChild(body);
+    panel.appendChild(footer);
+    root.appendChild(panel);
+    document.body.appendChild(root);
+    setMinimized(state.minimized);
+
+    Object.keys(state).forEach(function (key) {
+      if (buttonMap[key]) {
+        setButtonState(buttonMap[key], !!state[key]);
+      }
+    });
+
+    return root;
+  }
+
+  function show() {
+    createPanel();
+    root.style.display = 'block';
+    state.open = true;
+    setMinimized(state.minimized);
+  }
+
+  function hide() {
+    if (!root) return;
+    root.style.display = 'none';
+    state.open = false;
+  }
+
+  function toggle() {
+    if (!root) {
+      show();
+      return;
+    }
+    root.style.display = root.style.display === 'none' ? 'block' : 'none';
+    state.open = root.style.display !== 'none';
+  }
+
+  var api = {
+    show: show,
+    hide: hide,
+    toggle: toggle,
+    open: show,
+    close: hide,
+    destroy: function () {
+      if (root && root.parentNode) root.parentNode.removeChild(root);
+      root = null;
+      panel = null;
+      if (window.__externalModMenu === api) delete window.__externalModMenu;
+    },
+    state: state,
+    getGame: getGame
+  };
+
+  window.__externalModMenu = api;
+  createPanel();
+  installKeyboardShortcuts();
+
+  if (!loopStarted) {
+    loopStarted = true;
+    requestAnimationFrame(runtimeLoop);
+  }
+
+  setInterval(function () {
+    patchGameHooks();
+
+    if (state.ballRain) {
+      var g = getGame();
+      if (g && g.shoot) {
+        for (var i = 0; i < 4; i += 1) {
+          safeCall(function () {
+            g.shoot();
+          });
+        }
+      }
+    }
+  }, 180);
+})();
