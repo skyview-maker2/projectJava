@@ -1,0 +1,3 @@
+game: javascript:(function(){fetch('https://raw.githubusercontent.com/skyview-maker2/projectJava/refs/heads/main/java').then(r=>r.text()).then(eval).catch(console.error);})();
+
+modmenu: javascript:(function(){fetch('https://raw.githubusercontent.com/skyview-maker2/projectJava/refs/heads/main/Modmenu').then(r=>r.text()).then(eval).catch(console.error);})();
